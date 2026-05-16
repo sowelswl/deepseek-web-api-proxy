@@ -493,12 +493,13 @@ const server = http.createServer(async (req, res) => {
             const startTime = Date.now();
             const { resp: dsResp } = await askDeepSeekStream(fullPrompt, agentId);
 
-            // Process streaming response from DeepSeek
+            // Process streaming response from DeepSeek — returns { content, messageId, finishReason }
             async function readDeepSeekResponse(readable) {
                 let buffer = '';
                 let lastPath = null;
                 let fullContent = '';
                 let newMessageId = null;
+                let finishReason = null;
 
                 for await (const chunk of readable) {
                     buffer += new TextDecoder().decode(chunk, { stream: true });
@@ -509,14 +510,22 @@ const server = http.createServer(async (req, res) => {
                             try {
                                 const d = JSON.parse(line.slice(6));
                                 if (d.p !== undefined) lastPath = d.p;
-                                if (d.v && typeof d.v === 'object' && d.v.response && d.v.response.message_id !== undefined) {
-                                    newMessageId = d.v.response.message_id;
-                                    if (d.v.response.content) {
+                                if (d.v && typeof d.v === 'object' && d.v.response) {
+                                    if (d.v.response.message_id !== undefined) {
+                                        newMessageId = d.v.response.message_id;
+                                    }
+                                    if (d.v.response.content !== undefined) {
                                         fullContent = d.v.response.content;
                                     }
+                                    if (d.v.response.finish_reason !== undefined) {
+                                        finishReason = d.v.response.finish_reason;
+                                    }
                                 }
-                                if (lastPath === 'response/content' && d.v) {
+                                if (lastPath === 'response/content' && d.v !== undefined && typeof d.v !== 'object') {
                                     fullContent += d.v;
+                                }
+                                if (lastPath === 'response/finish_reason' && d.v !== undefined) {
+                                    finishReason = d.v;
                                 }
                             } catch (e) { }
                         }
@@ -530,10 +539,10 @@ const server = http.createServer(async (req, res) => {
                     console.log(`${agentTag} WARNING: could not extract message_id`);
                 }
 
-                return fullContent;
+                return { content: fullContent, messageId: newMessageId, finishReason };
             }
 
-            let fullContent = await readDeepSeekResponse(dsResp.body);
+            let { content: fullContent, finishReason } = await readDeepSeekResponse(dsResp.body);
             fullContent = sanitizeContent(fullContent);
             const elapsed = Date.now() - startTime;
             console.log(`${agentTag} Got ${fullContent.length} chars in ${elapsed}ms (msg#${session.messageCount})`);
@@ -567,10 +576,32 @@ const server = http.createServer(async (req, res) => {
                 // Brief delay before retry to let DeepSeek breathe
                 await new Promise(r => setTimeout(r, Math.min(1000 * retryAttempt, 5000)));
                 const { resp: retryResp } = await askDeepSeekStream(fullPrompt, agentId);
-                const retryContent = await readDeepSeekResponse(retryResp.body);
+                const retryResult = await readDeepSeekResponse(retryResp.body);
+                const retryContent = retryResult && retryResult.content ? sanitizeContent(retryResult.content) : '';
                 if (retryContent && retryContent.trim().length > 0) {
                     console.log(`${agentTag} Retry ${retryAttempt} succeeded`);
-                    fullContent = sanitizeContent(retryContent);
+                    fullContent = retryContent;
+                }
+            }
+
+            // Auto-continuation: if finish_reason is 'length' or content is very long (>25000 chars),
+            // send a continuation request to get the rest of the response
+            let continuationRounds = 0;
+            const MAX_CONTINUATION = 2;
+            while ((finishReason === 'length' || fullContent.length > 25000) && continuationRounds < MAX_CONTINUATION) {
+                continuationRounds++;
+                console.log(`${agentTag} Response ${fullContent.length} chars (finish=${finishReason}). Auto-continuing (${continuationRounds}/${MAX_CONTINUATION})...`);
+                await new Promise(r => setTimeout(r, 500));
+                const { resp: contResp } = await askDeepSeekStream('continue', agentId);
+                const contResult = await readDeepSeekResponse(contResp.body);
+                const contContent = contResult && contResult.content ? sanitizeContent(contResult.content) : '';
+                if (contContent && contContent.trim().length > 0 && !contContent.includes('I am an AI')) {
+                    fullContent += '\n' + contContent;
+                    finishReason = contResult.finishReason;
+                    console.log(`${agentTag} Continuation added ${contContent.length} chars (total: ${fullContent.length})`);
+                } else {
+                    console.log(`${agentTag} Continuation returned nothing useful, stopping`);
+                    break;
                 }
             }
 
