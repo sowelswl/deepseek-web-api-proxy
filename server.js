@@ -562,6 +562,31 @@ const server = http.createServer(async (req, res) => {
             }
 
             let toolCall = parseToolCall(fullContent);
+            
+            // Retry if TOOL_CALL was found but JSON was truncated/invalid
+            if (!toolCall && /TOOL_CALL:\s*\w/i.test(fullContent)) {
+                console.log(`${agentTag} TOOL_CALL detected but JSON invalid/truncated (${fullContent.length} chars). Retrying with stricter prompt...`);
+                session.id = null;
+                session.parentMessageId = null;
+                session.createdAt = null;
+                session.messageCount = 0;
+                await new Promise(r => setTimeout(r, 1000));
+                const strictPrompt = fullPrompt + '\n\n[STRICT INSTRUCTION] Your previous response had a TOOL_CALL but the arguments were too long and got cut off. Keep the arguments SHORT — no large file contents. Just use a minimal example or reference the file by name. Output ONLY: TOOL_CALL: <function>\narguments: <short JSON>';
+                const { resp: retryResp2 } = await askDeepSeekStream(strictPrompt, agentId);
+                const retryContent2 = await readDeepSeekResponse(retryResp2.body);
+                if (retryContent2 && retryContent2.trim()) {
+                    const cleaned2 = sanitizeContent(retryContent2);
+                    const retryTc = parseToolCall(cleaned2);
+                    if (retryTc) {
+                        console.log(`${agentTag} Retry with strict prompt succeeded: ${retryTc.name}`);
+                        fullContent = cleaned2;
+                        toolCall = retryTc;
+                    } else {
+                        console.log(`${agentTag} Retry still has broken JSON. Sending as text.`);
+                    }
+                }
+            }
+            
             storeHistory(agentId, prompt, fullContent, toolCall);
 
             if (stream) {
