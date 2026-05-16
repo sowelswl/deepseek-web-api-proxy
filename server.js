@@ -415,14 +415,14 @@ function takeAutoScreenshot(url) {
         const screenshotPath = path.join(outDir, `screenshot_${timestamp}.png`);
         
         console.log(`[Auto-Screenshot] Navigating to ${url}...`);
-        const navResult = execSync(`"${agentBrowser}" open "${url}" 2>&1`, { timeout: 20000, encoding: 'utf8' });
+        const navResult = execSync(`"${agentBrowser}" open "${url}" 2>&1`, { timeout: 30000, encoding: 'utf8' });
         console.log(`[Auto-Screenshot] Navigate output: ${navResult.trim().substring(0, 200)}`);
         
-        // Give browser a moment to render
-        execSync('sleep 1', { timeout: 5000 });
+        // Wait for page to render fully
+        execSync('sleep 3', { timeout: 10000 });
         
         console.log(`[Auto-Screenshot] Taking screenshot...`);
-        const ssResult = execSync(`"${agentBrowser}" screenshot "${screenshotPath}" 2>&1`, { timeout: 20000, encoding: 'utf8' });
+        const ssResult = execSync(`"${agentBrowser}" screenshot --full "${screenshotPath}" 2>&1`, { timeout: 30000, encoding: 'utf8' });
         console.log(`[Auto-Screenshot] Screenshot output: ${ssResult.trim().substring(0, 200)}`);
         
         if (fs.existsSync(screenshotPath)) {
