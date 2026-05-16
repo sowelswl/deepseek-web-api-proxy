@@ -236,7 +236,8 @@ function formatToolDefinitions(tools) {
 }
 
 function parseToolCall(text) {
-    const match = text.match(/(?:^|\n)\s*[A-Z_]*CALL:\s*(\w[\w-]*)\s*\n\s*arguments:\s*/i);
+    // Find TOOL_CALL: anywhere in the text (not just at start/newline)
+    const match = text.match(/TOOL_CALL:\s*(\w[\w-]*)\s*\n?\s*arguments:\s*/i);
     if (!match) return null;
     const name = match[1];
     const argsStart = match.index + match[0].length;
