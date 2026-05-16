@@ -29,8 +29,8 @@ const SERVER_PUBLIC_IP = (() => {
 
 // === Per-Agent Session Store ===
 const sessions = new Map();  // keyed by agent ID (from `user` field)
-const MAX_HISTORY_LENGTH = 5;
-const MAX_HISTORY_CHARS = 3000;
+const MAX_HISTORY_LENGTH = 15;
+const MAX_HISTORY_CHARS = 10000;
 const MAX_MESSAGE_DEPTH = 100;  // auto-reset after this many messages
 const SESSION_TTL_MS = 2 * 60 * 60 * 1000;  // 2 hours
 
@@ -226,7 +226,7 @@ function formatToolDefinitions(tools) {
             text += `\n## ${fn.name}\n`;
             text += `${fn.description || ''}\n`;
             if (fn.parameters) {
-                text += `Parameters: ${JSON.stringify(fn.parameters, null, 2)}\n`;
+                text += `Parameters: ${JSON.stringify(fn.parameters)}\n`;
             }
         }
     }
@@ -340,8 +340,8 @@ function storeHistory(agentId, prompt, content, toolCall) {
     const assistantResponse = toolCall
         ? `TOOL_CALL: ${toolCall.name}\narguments: ${toolCall.arguments}`
         : content;
-    // Save last 200 chars of the prompt for history context
-    const shortPrompt = prompt.length > 200 ? '...' + prompt.substring(prompt.length - 200) : prompt;
+    // Save last 500 chars of the prompt for history context
+    const shortPrompt = prompt.length > 500 ? '...' + prompt.substring(prompt.length - 500) : prompt;
     session.history.push({ user: shortPrompt, assistant: assistantResponse });
     while (session.history.length > MAX_HISTORY_LENGTH) session.history.shift();
     let historyChars = session.history.reduce((sum, e) => sum + e.user.length + e.assistant.length, 0);
@@ -377,8 +377,8 @@ function formatMessages(messages, tools) {
             }
         } else if (msg.role === 'tool' && msg.content) {
             // Tool execution result — send back to DeepSeek as context
-            const truncated = msg.content.length > 2000
-                ? msg.content.substring(0, 2000) + '\n...[truncated]'
+            const truncated = msg.content.length > 8000
+                ? msg.content.substring(0, 8000) + '\n...[truncated]'
                 : msg.content;
             conversation += `[Tool Result]\n${truncated}\n\n`;
         }
@@ -617,13 +617,13 @@ const server = http.createServer(async (req, res) => {
                 await new Promise(r => setTimeout(r, 1000));
                 const strictPrompt = fullPrompt + '\n\n[STRICT INSTRUCTION] Your previous response had a TOOL_CALL but the arguments were too long and got cut off. Keep the arguments SHORT — no large file contents. Just use a minimal example or reference the file by name. Output ONLY: TOOL_CALL: <function>\narguments: <short JSON>';
                 const { resp: retryResp2 } = await askDeepSeekStream(strictPrompt, agentId);
-                const retryContent2 = await readDeepSeekResponse(retryResp2.body);
+                const retryResult2 = await readDeepSeekResponse(retryResp2.body);
+                const retryContent2 = retryResult2 && retryResult2.content ? sanitizeContent(retryResult2.content) : '';
                 if (retryContent2 && retryContent2.trim()) {
-                    const cleaned2 = sanitizeContent(retryContent2);
-                    const retryTc = parseToolCall(cleaned2);
+                    const retryTc = parseToolCall(retryContent2);
                     if (retryTc) {
                         console.log(`${agentTag} Retry with strict prompt succeeded: ${retryTc.name}`);
-                        fullContent = cleaned2;
+                        fullContent = retryContent2;
                         toolCall = retryTc;
                     } else {
                         console.log(`${agentTag} Retry still has broken JSON. Sending as text.`);
