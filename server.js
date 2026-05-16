@@ -401,7 +401,12 @@ function takeAutoScreenshot(url) {
         const { execSync } = require('child_process');
         const path = require('path');
         const fs = require('fs');
-        const os = require('os');
+        
+        const agentBrowser = '/home/hermes-agent/node_modules/.bin/agent-browser';
+        if (!fs.existsSync(agentBrowser)) {
+            console.log(`[Auto-Screenshot] agent-browser not found at ${agentBrowser}`);
+            return null;
+        }
         
         const outDir = '/tmp/hermes-auto-screenshots';
         if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
@@ -410,15 +415,26 @@ function takeAutoScreenshot(url) {
         const screenshotPath = path.join(outDir, `screenshot_${timestamp}.png`);
         
         console.log(`[Auto-Screenshot] Navigating to ${url}...`);
-        execSync(`agent-browser open "${url}"`, { timeout: 15000, stdio: 'pipe' });
+        const navResult = execSync(`"${agentBrowser}" open "${url}" 2>&1`, { timeout: 20000, encoding: 'utf8' });
+        console.log(`[Auto-Screenshot] Navigate output: ${navResult.trim().substring(0, 200)}`);
+        
+        // Give browser a moment to render
+        execSync('sleep 1', { timeout: 5000 });
         
         console.log(`[Auto-Screenshot] Taking screenshot...`);
-        execSync(`agent-browser screenshot "${screenshotPath}"`, { timeout: 15000, stdio: 'pipe' });
+        const ssResult = execSync(`"${agentBrowser}" screenshot "${screenshotPath}" 2>&1`, { timeout: 20000, encoding: 'utf8' });
+        console.log(`[Auto-Screenshot] Screenshot output: ${ssResult.trim().substring(0, 200)}`);
         
         if (fs.existsSync(screenshotPath)) {
             const size = fs.statSync(screenshotPath).size;
             console.log(`[Auto-Screenshot] Saved ${screenshotPath} (${(size/1024).toFixed(1)} KB)`);
-            return `MEDIA:${screenshotPath}`;
+            if (size > 5000) { // Minimum viable screenshot size
+                return `MEDIA:${screenshotPath}`;
+            } else {
+                console.log(`[Auto-Screenshot] File too small (${size} bytes), likely blank`);
+            }
+        } else {
+            console.log(`[Auto-Screenshot] Screenshot file not created`);
         }
     } catch (e) {
         console.log(`[Auto-Screenshot] Failed: ${e.message}`);
