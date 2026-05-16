@@ -1,0 +1,8 @@
+node_modules/
+.env
+*.log
+auth.json
+*.session.json
+/tmp/deepseek_response_*
+.DS_Store
+*.pdf
