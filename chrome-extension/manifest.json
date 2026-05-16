@@ -2,9 +2,16 @@
   "manifest_version": 3,
   "name": "DeepSeek Auth Exporter",
   "version": "1.0",
-  "description": "Extract DeepSeek Chat cookies & headers for use with the DeepSeek Web API Proxy",
-  "permissions": ["cookies", "storage", "downloads", "webRequest"],
+  "description": "Extract DeepSeek Chat credentials from cookies + localStorage for use with the web API proxy",
+  "permissions": ["cookies", "storage", "downloads"],
   "host_permissions": ["https://chat.deepseek.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://chat.deepseek.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "background": {
     "service_worker": "background.js"
   },
