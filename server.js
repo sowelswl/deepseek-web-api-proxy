@@ -354,34 +354,38 @@ function storeHistory(agentId, prompt, content, toolCall) {
 // Extract MEDIA: paths from tool results that contain screenshot paths
 function extractScreenshotPaths(messages) {
     const paths = [];
+    const fs = require('fs');
     for (const msg of messages) {
         if (msg.role === 'tool' && msg.content) {
             // Look for screenshot_path or path fields in JSON tool results
+            // These come DIRECTLY from browser_vision — always the real path
             const pngMatch = msg.content.match(/["'](screenshot_path|path)["']\s*:\s*["']([^"']+\.(?:png|jpg|jpeg|webp|gif))["']/i);
             if (pngMatch) {
                 const filePath = pngMatch[2];
-                if (filePath.startsWith('/')) {
+                if (filePath.startsWith('/') && fs.existsSync(filePath)) {
                     paths.push(`MEDIA:${filePath}`);
                 }
             }
-            // Also catch plain MEDIA: tags that might already be present
+            // Also catch plain MEDIA: tags
             const mediaMatch = msg.content.match(/MEDIA:(\S+)/g);
             if (mediaMatch) {
                 for (const tag of mediaMatch) {
-                    if (!paths.includes(tag)) paths.push(tag);
+                    const extractedPath = tag.replace(/^MEDIA:/, '');
+                    if (fs.existsSync(extractedPath) && !paths.includes(tag)) {
+                        paths.push(tag);
+                    }
                 }
             }
         }
-        // Also check user and assistant messages for screenshot paths mentioned in conversation text
+        // Check user/assistant messages for paths mentioned in conversation text
+        // Only include if the file ACTUALLY EXISTS (DeepSeek hallucinates paths)
         if ((msg.role === 'user' || msg.role === 'assistant') && msg.content) {
             const content = typeof msg.content === 'string' ? msg.content : '';
-            // Look for absolute paths ending in image extensions anywhere in the text
             const pathRegex = /(\/[^\s<>"']+\.(?:png|jpg|jpeg|webp|gif))/gi;
             let match;
             while ((match = pathRegex.exec(content)) !== null) {
                 const filePath = match[1];
-                // Skip paths that clearly aren't real (e.g. just examples in code)
-                if (filePath.startsWith('/') && !paths.includes(`MEDIA:${filePath}`)) {
+                if (filePath.startsWith('/') && fs.existsSync(filePath) && !paths.includes(`MEDIA:${filePath}`)) {
                     paths.push(`MEDIA:${filePath}`);
                 }
             }
