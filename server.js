@@ -360,7 +360,6 @@ function extractScreenshotPaths(messages) {
             const pngMatch = msg.content.match(/["'](screenshot_path|path)["']\s*:\s*["']([^"']+\.(?:png|jpg|jpeg|webp|gif))["']/i);
             if (pngMatch) {
                 const filePath = pngMatch[2];
-                // Only add if it's an absolute path to a local file
                 if (filePath.startsWith('/')) {
                     paths.push(`MEDIA:${filePath}`);
                 }
@@ -370,6 +369,20 @@ function extractScreenshotPaths(messages) {
             if (mediaMatch) {
                 for (const tag of mediaMatch) {
                     if (!paths.includes(tag)) paths.push(tag);
+                }
+            }
+        }
+        // Also check user and assistant messages for screenshot paths mentioned in conversation text
+        if ((msg.role === 'user' || msg.role === 'assistant') && msg.content) {
+            const content = typeof msg.content === 'string' ? msg.content : '';
+            // Look for absolute paths ending in image extensions anywhere in the text
+            const pathRegex = /(\/[^\s<>"']+\.(?:png|jpg|jpeg|webp|gif))/gi;
+            let match;
+            while ((match = pathRegex.exec(content)) !== null) {
+                const filePath = match[1];
+                // Skip paths that clearly aren't real (e.g. just examples in code)
+                if (filePath.startsWith('/') && !paths.includes(`MEDIA:${filePath}`)) {
+                    paths.push(`MEDIA:${filePath}`);
                 }
             }
         }
