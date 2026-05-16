@@ -394,6 +394,38 @@ function extractScreenshotPaths(messages) {
     return paths;
 }
 
+// Auto-screenshot fallback: when DeepSeek mentions a URL in its response but didn't
+// use browser_vision, take a screenshot via agent-browser CLI and inject MEDIA:
+function takeAutoScreenshot(url) {
+    try {
+        const { execSync } = require('child_process');
+        const path = require('path');
+        const fs = require('fs');
+        const os = require('os');
+        
+        const outDir = '/tmp/hermes-auto-screenshots';
+        if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+        
+        const timestamp = Date.now();
+        const screenshotPath = path.join(outDir, `screenshot_${timestamp}.png`);
+        
+        console.log(`[Auto-Screenshot] Navigating to ${url}...`);
+        execSync(`agent-browser open "${url}"`, { timeout: 15000, stdio: 'pipe' });
+        
+        console.log(`[Auto-Screenshot] Taking screenshot...`);
+        execSync(`agent-browser screenshot "${screenshotPath}"`, { timeout: 15000, stdio: 'pipe' });
+        
+        if (fs.existsSync(screenshotPath)) {
+            const size = fs.statSync(screenshotPath).size;
+            console.log(`[Auto-Screenshot] Saved ${screenshotPath} (${(size/1024).toFixed(1)} KB)`);
+            return `MEDIA:${screenshotPath}`;
+        }
+    } catch (e) {
+        console.log(`[Auto-Screenshot] Failed: ${e.message}`);
+    }
+    return null;
+}
+
 function formatMessages(messages, tools) {
     let systemPrompt = '';
     for (const msg of messages) {
@@ -682,6 +714,17 @@ const server = http.createServer(async (req, res) => {
                 if (screenshotPaths.length > 0) {
                     fullContent += '\n\n' + screenshotPaths.join('\n');
                     console.log(`${agentTag} Injected MEDIA paths into response: ${screenshotPaths.join(', ')}`);
+                } else {
+                    // Fallback: if DeepSeek mentions a URL and user asked about a page/screenshot,
+                    // take a screenshot automatically using agent-browser
+                    const urlMatch = fullContent.match(/https?:\/\/[^\s<>"']+/i);
+                    if (urlMatch) {
+                        const screenshotResult = takeAutoScreenshot(urlMatch[0]);
+                        if (screenshotResult) {
+                            fullContent += '\n\n' + screenshotResult;
+                            console.log(`${agentTag} Auto-screenshot taken and injected: ${screenshotResult}`);
+                        }
+                    }
                 }
             }
 
