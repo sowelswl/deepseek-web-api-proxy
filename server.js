@@ -238,13 +238,19 @@ function formatToolDefinitions(tools) {
 function parseToolCall(text) {
     // Find TOOL_CALL: anywhere in the text, followed by a function name
     const match = text.match(/TOOL_CALL:\s*(\w[\w-]*)\s*/i);
-    if (!match) return null;
+    if (!match) {
+        console.log(`[parseToolCall] No TOOL_CALL match in ${text.length} chars`);
+        return null;
+    }
     const name = match[1];
     
     // Search for the first { after the match position
     const afterMatch = text.substring(match.index + match[0].length);
     const braceIdx = afterMatch.indexOf('{');
-    if (braceIdx === -1) return null;
+    if (braceIdx === -1) {
+        console.log(`[parseToolCall] TOOL_CALL:${name} found but no { after it`);
+        return null;
+    }
     
     const rest = afterMatch.substring(braceIdx);
     let braceDepth = 0;
@@ -264,10 +270,17 @@ function parseToolCall(text) {
             }
         }
     }
-    if (jsonEnd === -1) return null;
+    if (jsonEnd === -1) {
+        console.log(`[parseToolCall] TOOL_CALL:${name} unbalanced braces (depth=${braceDepth}, scanned=${rest.length} chars)`);
+        return null;
+    }
     const rawJson = rest.substring(0, jsonEnd);
     let args;
-    try { args = JSON.parse(rawJson); } catch (e) { return null; }
+    try { args = JSON.parse(rawJson); } catch (e) {
+        console.log(`[parseToolCall] TOOL_CALL:${name} JSON.parse failed: ${e.message.substring(0,100)} at jsonEnd=${jsonEnd}`);
+        return null;
+    }
+    console.log(`[parseToolCall] SUCCESS: ${name} (args=${rawJson.length} chars)`);
     return { name, arguments: JSON.stringify(args) };
 }
 
