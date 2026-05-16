@@ -236,12 +236,17 @@ function formatToolDefinitions(tools) {
 }
 
 function parseToolCall(text) {
-    // Find TOOL_CALL: anywhere in the text (not just at start/newline)
-    const match = text.match(/TOOL_CALL:\s*(\w[\w-]*)\s*\n?\s*arguments:\s*/i);
+    // Find TOOL_CALL: anywhere in the text, followed by a function name
+    const match = text.match(/TOOL_CALL:\s*(\w[\w-]*)\s*/i);
     if (!match) return null;
     const name = match[1];
-    const argsStart = match.index + match[0].length;
-    const rest = text.substring(argsStart);
+    
+    // Search for the first { after the match position
+    const afterMatch = text.substring(match.index + match[0].length);
+    const braceIdx = afterMatch.indexOf('{');
+    if (braceIdx === -1) return null;
+    
+    const rest = afterMatch.substring(braceIdx);
     let braceDepth = 0;
     let inString = false;
     let escape = false;
