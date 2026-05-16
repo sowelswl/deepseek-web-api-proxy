@@ -271,6 +271,14 @@ function parseToolCall(text) {
     return { name, arguments: JSON.stringify(args) };
 }
 
+/**
+ * Strip surrogate characters and other problematic Unicode from text
+ * to prevent httpx/urlencode crashes when the gateway sends to Telegram.
+ */
+function sanitizeContent(text) {
+    return text.replace(/[\ud800-\udfff]/g, '');
+}
+
 function buildToolCallResponse(toolCall) {
     const id = 'call_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
     return {
@@ -513,6 +521,7 @@ const server = http.createServer(async (req, res) => {
             }
 
             let fullContent = await readDeepSeekResponse(dsResp.body);
+            fullContent = sanitizeContent(fullContent);
             const elapsed = Date.now() - startTime;
             console.log(`${agentTag} Got ${fullContent.length} chars in ${elapsed}ms (msg#${session.messageCount})`);
 
@@ -548,7 +557,7 @@ const server = http.createServer(async (req, res) => {
                 const retryContent = await readDeepSeekResponse(retryResp.body);
                 if (retryContent && retryContent.trim().length > 0) {
                     console.log(`${agentTag} Retry ${retryAttempt} succeeded`);
-                    fullContent = retryContent;
+                    fullContent = sanitizeContent(retryContent);
                 }
             }
 
