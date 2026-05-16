@@ -351,6 +351,32 @@ function storeHistory(agentId, prompt, content, toolCall) {
     }
 }
 
+// Extract MEDIA: paths from tool results that contain screenshot paths
+function extractScreenshotPaths(messages) {
+    const paths = [];
+    for (const msg of messages) {
+        if (msg.role === 'tool' && msg.content) {
+            // Look for screenshot_path or path fields in JSON tool results
+            const pngMatch = msg.content.match(/["'](screenshot_path|path)["']\s*:\s*["']([^"']+\.(?:png|jpg|jpeg|webp|gif))["']/i);
+            if (pngMatch) {
+                const filePath = pngMatch[2];
+                // Only add if it's an absolute path to a local file
+                if (filePath.startsWith('/')) {
+                    paths.push(`MEDIA:${filePath}`);
+                }
+            }
+            // Also catch plain MEDIA: tags that might already be present
+            const mediaMatch = msg.content.match(/MEDIA:(\S+)/g);
+            if (mediaMatch) {
+                for (const tag of mediaMatch) {
+                    if (!paths.includes(tag)) paths.push(tag);
+                }
+            }
+        }
+    }
+    return paths;
+}
+
 function formatMessages(messages, tools) {
     let systemPrompt = '';
     for (const msg of messages) {
@@ -631,6 +657,17 @@ const server = http.createServer(async (req, res) => {
                 }
             }
             
+            // Check if any tool results in the current conversation contained a screenshot path.
+            // If so, and the response doesn't already have MEDIA:, inject it so the gateway
+            // delivers the file to Telegram.
+            if (!fullContent.includes('MEDIA:')) {
+                const screenshotPaths = extractScreenshotPaths(messages);
+                if (screenshotPaths.length > 0) {
+                    fullContent += '\n\n' + screenshotPaths.join('\n');
+                    console.log(`${agentTag} Injected MEDIA paths into response: ${screenshotPaths.join(', ')}`);
+                }
+            }
+
             storeHistory(agentId, prompt, fullContent, toolCall);
 
             if (stream) {
