@@ -35,7 +35,7 @@ async function readCookies() {
 
 // Read localStorage values via content script injection
 async function readLocalStorage(tabId) {
-  const keys = ['hif_dliq_cached', 'hif_leim_cached', 'userToken'];
+  const keys = ['hif_dliq_cached', 'hif_dliq', 'hif_leim_cached', 'hif_leim', 'userToken'];
   try {
     const results = await new Promise((resolve, reject) => {
       chrome.tabs.sendMessage(
@@ -78,8 +78,8 @@ async function collectAndStore(tabId) {
     ds_session_id: cookies.ds_session_id || '',
     smidV2: cookies.smidV2 || '',
     cookie: cookies.cookie || '',
-    hif_dliq: ls.hif_dliq_cached || '',
-    hif_leim: ls.hif_leim_cached || '',
+    hif_dliq: ls.hif_dliq_cached || ls.hif_dliq || '',
+    hif_leim: ls.hif_leim_cached || ls.hif_leim || '',
     _lastUpdated: new Date().toISOString(),
   };
 
