@@ -3,9 +3,19 @@
 
 const STORAGE_KEY = 'deepseek_auth';
 
+function extractTokenValue(raw) {
+  if (!raw) return '';
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed.value || '';
+  } catch (e) {
+    return raw;
+  }
+}
+
 // Read all needed cookies from chat.deepseek.com
 async function readCookies() {
-  const needed = ['token', 'ds_session_id', 'smidV2'];
+  const needed = ['ds_session_id', 'smidV2'];
   const results = {};
   for (const name of needed) {
     const cookie = await new Promise((resolve) =>
@@ -25,7 +35,7 @@ async function readCookies() {
 
 // Read localStorage values via content script injection
 async function readLocalStorage(tabId) {
-  const keys = ['hif_dliq', 'hif_leim'];
+  const keys = ['hif_dliq_cached', 'hif_leim_cached', 'userToken'];
   try {
     const results = await new Promise((resolve, reject) => {
       chrome.tabs.sendMessage(
@@ -59,12 +69,12 @@ async function collectAndStore(tabId) {
   if (tabId) ls = await readLocalStorage(tabId);
 
   const merged = {
-    token: cookies.token || '',
+    token: cookies.token || ls.userToken ? extractTokenValue(ls.userToken) : '',
     ds_session_id: cookies.ds_session_id || '',
     smidV2: cookies.smidV2 || '',
     cookie: cookies.cookie || '',
-    hif_dliq: ls.hif_dliq || '',
-    hif_leim: ls.hif_leim || '',
+    hif_dliq: ls.hif_dliq_cached || '',
+    hif_leim: ls.hif_leim_cached || '',
     _lastUpdated: new Date().toISOString(),
   };
 
