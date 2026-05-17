@@ -54,7 +54,7 @@ const BASE_HEADERS = {
     "X-Client-Platform": "web", "X-Client-Version": "1.0.0-always",
     "X-Client-Locale": "en_US", "X-App-Version": "20241129.1",
     "Authorization": `Bearer ${DS_CONFIG.token}`,
-    "x-hif-dliq": DS_CONFIG.hif_dliq, "x-hif-leim": DS_CONFIG.hif_leim,
+    "x-hif-dliq": DS_CONFIG.hif_dliq || '', "x-hif-leim": DS_CONFIG.hif_leim || '',
     "Origin": "https://chat.deepseek.com", "Referer": "https://chat.deepseek.com/",
     "Cookie": DS_CONFIG.cookie, "Content-Type": "application/json",
 };
