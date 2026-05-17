@@ -40,15 +40,20 @@ async function readLocalStorage(tabId) {
     const results = await new Promise((resolve, reject) => {
       chrome.tabs.sendMessage(
         tabId,
-        { action: 'readLocalStorage', keys },
+        { action: 'readLocalStorage', keys, dumpAll: true },
         (response) => {
           if (chrome.runtime.lastError) reject(chrome.runtime.lastError.message);
           else resolve(response.data || {});
         }
       );
     });
+    console.log('[DS Auth] readLocalStorage results:', JSON.stringify(results));
+    if (results._allKeys) {
+      console.log('[DS Auth] All localStorage keys:', JSON.stringify(results._allKeys));
+    }
     return results;
   } catch (e) {
+    console.warn('[DS Auth] readLocalStorage failed:', e);
     return {};
   }
 }

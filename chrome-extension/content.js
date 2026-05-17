@@ -4,12 +4,17 @@
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'readLocalStorage') {
     const data = {};
-    for (const key of request.keys) {
+    const keys = request.keys || [];
+    for (const key of keys) {
       try {
         data[key] = localStorage.getItem(key) || '';
       } catch (e) {
         data[key] = '';
       }
+    }
+    // Also dump all keys for debugging
+    if (request.dumpAll) {
+      data._allKeys = Object.keys(localStorage);
     }
     sendResponse({ data });
   }
