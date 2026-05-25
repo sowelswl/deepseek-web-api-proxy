@@ -613,6 +613,18 @@ const server = http.createServer(async (req, res) => {
 
             const session = getOrCreateAgentSession(agentId);
 
+            // Detect fresh conversation (/new command): if no assistant or tool messages,
+            // the gateway cleared its history. Reset the DeepSeek web session to prevent
+            // context bleed from the previous conversation.
+            const hasAssistantMessages = messages.some(m => m.role === 'assistant');
+            if (!hasAssistantMessages && session.id) {
+                console.log(`${agentTag} Fresh conversation detected (no assistant messages). Resetting DeepSeek web session.`);
+                session.id = null;
+                session.parentMessageId = null;
+                session.createdAt = null;
+                session.messageCount = 0;
+            }
+
             // Build history prefix if starting fresh
             let historyPrefix = '';
             if (!session.id && session.history.length > 0) {
