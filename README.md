@@ -128,10 +128,10 @@ If you prefer not to use the extension, you can copy the credentials by hand:
 | `Cookie` | Request headers (needs `ds_session_id` and `smidV2`) |
 | `wasmUrl` | Find `sha3_wasm_bg.*.wasm` in the page sources |
 
-6. **Save** as `deepseek-auth.json` (use `auth.example.json` as a template):
+6. **Save** as `deepseek-auth.json` (use `deepseek-auth.example.json` as a template):
 
 ```bash
-cp auth.example.json deepseek-auth.json
+cp deepseek-auth.example.json deepseek-auth.json
 # Edit the file with the values you copied
 ```
 
