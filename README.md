@@ -106,7 +106,7 @@ mv ~/Downloads/deepseek-auth.json /path/to/deepseek-web-api-proxy/
 
 That's it. The proxy reads `deepseek-auth.json` by default.
 
-> **Tip:** Credentials expire every 1–2 hours. When the proxy returns empty responses, go back to chat.deepseek.com in your browser, open the extension popup again, click **Collect from Tab**, then **Download File** and replace the old file. A systemd service restart may be needed to pick up the new file.
+> **Tip:** If the proxy stops working, open the extension popup again on `chat.deepseek.com`, click **Collect from Tab**, then **Download File** and replace the old `deepseek-auth.json`.
 
 ---
 
@@ -147,7 +147,7 @@ The file should look like this:
 }
 ```
 
-> **Note:** Manually copied credentials expire periodically (typically 1–2 hours). When the proxy returns empty responses, reconnect to DeepSeek in your browser and refresh the values.
+> **Note:** If the proxy stops working, reconnect to DeepSeek in your browser and refresh the values.
 
 ---
 
