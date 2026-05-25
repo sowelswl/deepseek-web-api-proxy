@@ -5,7 +5,7 @@
 This project reverse-engineers the **DeepSeek Web chat API** (`chat.deepseek.com`) to expose it as an **OpenAI-compatible API endpoint**. It allows any OpenAI-compatible client (Hermes agents, custom scripts, etc.) to use DeepSeek's free web model as if it were a paid API — including tool calling, streaming, and multi-session support.
 
 **Server:** `host2.onldigital.com` (161.97.175.214)  
-**Proxy:** Node.js HTTP server on port 9654  
+**Proxy:** Node.js HTTP server on port 9655  
 **Model exposed:** `deepseek-web-v3` (DeepSeek V3 via web)
 
 ---
@@ -332,8 +332,8 @@ The proxy uses `user` from the request body. If not set, it falls back to the cl
   id: "uuid",                    // DeepSeek web session ID
   parentMessageId: <int|null>,   // Last message ID for threading
   createdAt: <timestamp>,        // Session creation time
-  messageCount: 0-50,            // Messages in this session
-  history: [                     // Last 5 exchanges for context recovery
+  messageCount: 0-100,           // Messages in this session
+  history: [                     // Last 15 exchanges for context recovery
     { user: "...", assistant: "..." }
   ]
 }
@@ -407,14 +407,15 @@ The parser traverses character by character tracking brace depth:
 
 | Condition | Action |
 |---|---|
-| Message count >= 50 | Auto-reset DeepSeek session, keep history buffer |
+| Message count >= 100 | Auto-reset DeepSeek session, keep history buffer |
 | Session age > 2 hours | Auto-reset (DeepSeek web session TTL) |
 | HTTP 400/404/500 response | Reset and retry once |
-| Empty content response | Return HTTP 502 (no retry) |
+| Empty content response | Retry up to 3 times with fresh sessions |
+| Stream idle > 25s (Continue button) | Break stream, trigger auto-continuation |
 
 ### 6.2 History Buffer
 
-When a session is reset, the proxy preserves the **last 5 exchanges** (capped at ~3000 chars). On the next request, it injects them as context:
+When a session is reset, the proxy preserves the **last 15 exchanges** (capped at ~10000 chars). On the next request, it injects them as context:
 
 ```
 [Previous conversation]
@@ -441,15 +442,55 @@ If DeepSeek's web session expires (HTTP 400/404/500):
 
 ---
 
-## 7. Configuration
+## 7. Auto-Continuation (Long Responses)
 
-### 7.1 Proxy Configuration (in deepseek-api-server.js)
+DeepSeek's web chat shows a "Continue generating" button for very long responses. The proxy handles this automatically:
+
+1. **25-second idle timeout** — if no SSE data arrives for 25s, the stream is considered paused
+2. **Sets `finishReason = 'length'`** — triggers the continuation loop
+3. **Sends `'continue'` message** — with `parent_message_id` set to the last assistant message, requesting DeepSeek to extend its response
+4. **Up to 4 continuation rounds** — each appends more content to the accumulated response
+
+```
+Normal flow:
+  [DeepSeek streams data...] ────────────────────────────► content done
+              ↓                                   ↓
+         Stream ends normally              Stream idles 25s
+                                           (Continue button)
+              ↓                                   ↓
+         Return content                   Set finishReason='length'
+                                           Send 'continue' prompt
+                                           Append new content
+                                           (repeat up to 4×)
+              ↓                                   ↓
+         [Done]                              [Full response]
+```
+
+---
+
+## 8. MEDIA File Injection
+
+When tool results or agent responses contain file paths, the proxy auto-detects them and appends `MEDIA:/path/to/file` tags for Telegram attachment delivery.
+
+**Detected fields:** `screenshot_path`, `path`, `file_path`, `output_path`, `result_path`
+**Supported extensions:** `png|jpg|jpeg|webp|gif|pdf|docx|doc|txt|md|html|htm|xlsx|xls|csv|pptx|zip|tar|gz|mp4|mov|mp3|wav|ogg`
+
+**Scan scope:** Only the last 3 tool results (to avoid re-injecting old files from previous turns)
+**Deduplication:** Skips paths already mentioned in the response text
+**Fallback:** If DeepSeek mentions a URL and MEDIA wasn't triggered, auto-screenshot is taken via browser tool
+
+---
+
+## 9. Configuration
+
+### 9.1 Proxy Configuration (in server.js)
 
 ```javascript
-const MAX_HISTORY_LENGTH = 5;     // Keep last 5 exchanges
-const MAX_HISTORY_CHARS = 3000;   // Max chars for history buffer
-const MAX_MESSAGE_DEPTH = 50;     // Auto-reset after 50 messages
+const MAX_HISTORY_LENGTH = 15;    // Keep last 15 exchanges
+const MAX_HISTORY_CHARS = 10000;  // Max chars for history buffer
+const MAX_MESSAGE_DEPTH = 100;    // Auto-reset after 100 messages
 const SESSION_TTL_MS = 2 * 60 * 60 * 1000;  // 2 hours
+const STREAM_IDLE_TIMEOUT = 25000; // 25s — auto-continuation trigger
 
 const DS_CONFIG = {
   token: "...",                     // DeepSeek auth token
@@ -466,13 +507,13 @@ const DS_CONFIG = {
 model:
   default: deepseek-web-v3
   provider: custom
-  base_url: http://127.0.0.1:9654/v1
+  base_url: http://127.0.0.1:9655/v1
   model: deepseek-web-v3
 providers: {}
 fallback_providers: []
 ```
 
-### 7.3 Environment Variables Required
+### 9.2 Environment Variables Required
 
 - **DeepSeek token** — from browser's `Authorization` header on chat.deepseek.com
 - **x-hif-dliq** — custom header from browser
@@ -482,33 +523,33 @@ fallback_providers: []
 
 ---
 
-## 8. Running the Proxy
+## 10. Running the Proxy
 
 ```bash
 # Start
-node /root/.hermes/profiles/security-guy/scripts/deepseek-api-server.js
+node /root/deepseek-web-api-proxy/server.js
 
 # Output
-[DS-API] Server on http://0.0.0.0:9654 (multi-agent sessions enabled)
+[DS-API] Server on http://0.0.0.0:9655 (multi-agent sessions enabled)
 [DS-API] POST /v1/chat/completions (stream=true|false)
 [DS-API] GET  /v1/sessions — list active agent sessions
 [DS-API] POST /reset-session?agent=<id> — reset agent's session
 [DS-API] POST /reset-session?agent=all — reset ALL sessions
 
 # Test
-curl -s http://127.0.0.1:9654/health
-curl -s http://127.0.0.1:9654/v1/models
-curl -s http://127.0.0.1:9654/v1/sessions
+curl -s http://127.0.0.1:9655/health
+curl -s http://127.0.0.1:9655/v1/models
+curl -s http://127.0.0.1:9655/v1/sessions
 
 # Chat
-curl -s http://127.0.0.1:9654/v1/chat/completions \
+curl -s http://127.0.0.1:9655/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"hello"}],"stream":false}'
 ```
 
 ---
 
-## 9. Error Codes
+## 11. Error Codes
 
 | HTTP Code | Type | Meaning |
 |---|---|---|
@@ -533,20 +574,21 @@ Error response format:
 
 ---
 
-## 10. Known Limitations
+## 12. Known Limitations
 
 | Issue | Cause | Impact |
 |---|---|---|
-| Empty responses at msg 17-34 | DeepSeek web session instability | Conversation interrupted, retry needed |
+| Empty responses | DeepSeek web session instability | Retry loop handles it (up to 3 attempts) |
 | No native tool calling | DeepSeek Web API doesn't support it | LLM may generate malformed tool calls |
 | Response time 3-17s | PoW + network to DeepSeek | Slower than official API |
 | Session TTL ~2h | DeepSeek web browser timeout | Periodic session resets |
 | Credentials expire | Browser tokens/cookies change | Proxy needs re-auth |
 | Same DeepSeek account | All agents share one web login | Rate limiting across all sessions |
+| Long responses hang | DeepSeek "Continue" button in web UI | 25s idle timeout triggers auto-continuation
 
 ---
 
-## 11. Comparison: Web API vs Official API
+## 13. Comparison: Web API vs Official API
 
 | Feature | Web API (Proxy) | Official API |
 |---|---|---|
@@ -562,13 +604,12 @@ Error response format:
 
 ---
 
-## 12. File Locations
+## 14. File Locations
 
 | File | Path |
 |---|---|
-| Proxy server | `/root/.hermes/profiles/security-guy/scripts/deepseek-api-server.js` |
-| Security Guy SOUL | `/root/.hermes/profiles/security-guy/SOUL.md` |
-| Security Guy config | `/root/.hermes/profiles/security-guy/config.yaml` |
-| Gateway logs | `/root/.hermes/profiles/security-guy/logs/gateway.log` |
-| Agent logs | `/root/.hermes/profiles/security-guy/logs/agent.log` |
-| Error logs | `/root/.hermes/profiles/security-guy/logs/errors.log` |
+| Proxy server | `/root/deepseek-web-api-proxy/server.js` |
+| Auth config | `/root/deepseek-web-api-proxy/deepseek-auth.json` |
+| Auth example | `/root/deepseek-web-api-proxy/auth.example.json` |
+| CLI client | `/root/deepseek-web-api-proxy/client.js` |
+| Systemd service | `/etc/systemd/system/deepseek-web-proxy.service` |

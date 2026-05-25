@@ -218,20 +218,43 @@ function formatToolDefinitions(tools) {
     text += '2. Do NOT simulate, guess, or fabricate command output — wait for the actual result\n';
     text += '3. The tool runs on ' + SERVER_HOST + ' (' + SERVER_PUBLIC_IP + '), your local server — NOT on DeepSeek\n';
     text += '4. After the tool executes, the result will be sent to you as a new user message\n';
-    text += '5. Never add explanation before or after the TOOL_CALL — the entire response must be just the request\n\n';
+    text += '5. Never add explanation before or after the TOOL_CALL — the entire response must be just the request\n';
+    text += '6. When you generate or create a file (PDF, image, document, etc.) using a tool like exec_command,\n';
+    text += '   include the file path in your final response using MEDIA: format like:\n';
+    text += '   MEDIA:/path/to/generated/file.pdf\n';
+    text += '   The file will be automatically delivered to the user as an attachment.\n\n';
+    text += 'BROWSER WORKFLOW (for viewing web pages):\n';
+    text += '   Step 1: browser_navigate(url: "https://...") — go to a page\n';
+    text += '   IMPORTANT: After navigating, call browser_snapshot() FIRST to wait for the page to load.\n';
+    text += '   Step 2: browser_snapshot() — wait for page load AND get the page content as text\n';
+    text += '   Step 3: browser_vision(question: "describe what you see") — take a screenshot and analyze it\n';
+    text += '   Without Step 2, the page may not be fully rendered and the screenshot will be blank/white.\n';
+    text += '   The screenshot path is automatically detected and sent to the user via MEDIA:\n';
+    text += '   You can also click elements by ref (e.g. "@e5") and type into fields.\n\n';
     text += 'Available functions:\n';
     for (const tool of tools) {
         if (tool.type === 'function' && tool.function) {
             const fn = tool.function;
             text += `\n## ${fn.name}\n`;
             text += `${fn.description || ''}\n`;
-            if (fn.parameters) {
-                text += `Parameters: ${JSON.stringify(fn.parameters)}\n`;
+            if (fn.parameters && fn.parameters.properties) {
+                const props = fn.parameters.properties;
+                const required = fn.parameters.required || [];
+                for (const [key, val] of Object.entries(props)) {
+                    const isReq = required.includes(key) ? ' (required)' : '';
+                    const type = val.type || 'string';
+                    const desc = (val.description || '').substring(0, 120);
+                    text += `  - ${key}: ${type}${isReq} — ${desc}\n`;
+                    // Show enum values if present
+                    if (val.enum) {
+                        text += `    Values: ${val.enum.join(', ')}\n`;
+                    }
+                }
             }
         }
     }
     text += '\n--- END TOOL REQUEST SYSTEM ---\n';
-    text += '\nREMEMBER: You are requesting a tool to run on the local server. You will receive the actual output in the next message. Never simulate results.';
+    text += '\nREMEMBER: Output ONLY the TOOL_CALL line. No explanations, no extra text. To browse a website, use browser_navigate first, then browser_snapshot or browser_vision to see the content. The screenshot goes to the user automatically via MEDIA:';
     return text;
 }
 
@@ -351,46 +374,67 @@ function storeHistory(agentId, prompt, content, toolCall) {
     }
 }
 
-// Extract MEDIA: paths from tool results that contain screenshot paths
-function extractScreenshotPaths(messages) {
+// Extract MEDIA: paths from tool results and response text
+// Handles images, PDFs, documents, and any local file the agent generates
+const FILE_EXTENSIONS = 'png|jpg|jpeg|webp|gif|pdf|docx|doc|txt|md|html|htm|xlsx|xls|csv|pptx|zip|tar|gz|mp4|mov|mp3|wav|ogg';
+function extractFilePaths(messages, responseContent) {
     const paths = [];
     const fs = require('fs');
-    for (const msg of messages) {
+    
+    // Helper: add path if it exists as a real file
+    function addIfReal(path) {
+        if (path && path.startsWith('/') && fs.existsSync(path) && !paths.includes(`MEDIA:${path}`)) {
+            paths.push(`MEDIA:${path}`);
+        }
+    }
+    
+    // Only scan the last 3 messages — tool results from old turns
+    // have already been delivered and including them would re-attach
+    // old files on every new message.
+    const recentMessages = messages.slice(-3);
+    for (const msg of recentMessages) {
         if (msg.role === 'tool' && msg.content) {
             // Look for screenshot_path or path fields in JSON tool results
-            // These come DIRECTLY from browser_vision — always the real path
-            const pngMatch = msg.content.match(/["'](screenshot_path|path)["']\s*:\s*["']([^"']+\.(?:png|jpg|jpeg|webp|gif))["']/i);
-            if (pngMatch) {
-                const filePath = pngMatch[2];
-                if (filePath.startsWith('/') && fs.existsSync(filePath)) {
-                    paths.push(`MEDIA:${filePath}`);
+            const fileRefMatch = msg.content.match(/["'](?:screenshot_path|path|file_path|output_path|result_path)["']\s*:\s*["']([^"']+)["']/gi);
+            if (fileRefMatch) {
+                for (const match of fileRefMatch) {
+                    try {
+                        const val = JSON.parse('{' + match + '}');
+                        const filePath = Object.values(val)[0];
+                        if (typeof filePath === 'string' && filePath.startsWith('/')) {
+                            addIfReal(filePath);
+                        }
+                    } catch (e) {}
                 }
             }
+            
             // Also catch plain MEDIA: tags
             const mediaMatch = msg.content.match(/MEDIA:(\S+)/g);
             if (mediaMatch) {
                 for (const tag of mediaMatch) {
                     const extractedPath = tag.replace(/^MEDIA:/, '');
-                    if (fs.existsSync(extractedPath) && !paths.includes(tag)) {
-                        paths.push(tag);
-                    }
+                    addIfReal(extractedPath);
                 }
             }
-        }
-        // Check user/assistant messages for paths mentioned in conversation text
-        // Only include if the file ACTUALLY EXISTS (DeepSeek hallucinates paths)
-        if ((msg.role === 'user' || msg.role === 'assistant') && msg.content) {
-            const content = typeof msg.content === 'string' ? msg.content : '';
-            const pathRegex = /(\/[^\s<>"']+\.(?:png|jpg|jpeg|webp|gif))/gi;
+            
+            // Catch any absolute file paths in tool output that actually exist
+            const anyPathRegex = new RegExp(`(\\/[^\\s<>"'\\n]+(?:\\.(?:${FILE_EXTENSIONS})))`, 'gi');
             let match;
-            while ((match = pathRegex.exec(content)) !== null) {
-                const filePath = match[1];
-                if (filePath.startsWith('/') && fs.existsSync(filePath) && !paths.includes(`MEDIA:${filePath}`)) {
-                    paths.push(`MEDIA:${filePath}`);
-                }
+            while ((match = anyPathRegex.exec(msg.content)) !== null) {
+                addIfReal(match[1]);
             }
         }
     }
+    
+    // Also scan the LLM's response text for existing file paths
+    if (responseContent) {
+        const responsePathRegex = new RegExp(`(\\/[^\\s<>"'\\n]+(?:\\.(?:${FILE_EXTENSIONS})))`, 'gi');
+        let match;
+        while ((match = responsePathRegex.exec(responseContent)) !== null) {
+            addIfReal(match[1]);
+        }
+    }
+    
     return paths;
 }
 
@@ -418,8 +462,10 @@ function takeAutoScreenshot(url) {
         const navResult = execSync(`"${agentBrowser}" open "${url}" 2>&1`, { timeout: 30000, encoding: 'utf8' });
         console.log(`[Auto-Screenshot] Navigate output: ${navResult.trim().substring(0, 200)}`);
         
-        // Wait for page to render fully
-        execSync('sleep 3', { timeout: 10000 });
+        // Wait for page to render fully — longer for JS-heavy pages
+        const pageLoadWait = 5; // seconds
+        console.log(`[Auto-Screenshot] Waiting ${pageLoadWait}s for page render...`);
+        execSync(`sleep ${pageLoadWait}`, { timeout: 15000 });
         
         console.log(`[Auto-Screenshot] Taking screenshot...`);
         const ssResult = execSync(`"${agentBrowser}" screenshot --full "${screenshotPath}" 2>&1`, { timeout: 30000, encoding: 'utf8' });
@@ -585,42 +631,73 @@ const server = http.createServer(async (req, res) => {
             const { resp: dsResp } = await askDeepSeekStream(fullPrompt, agentId);
 
             // Process streaming response from DeepSeek — returns { content, messageId, finishReason }
+            // Uses a 25-second idle timeout: if DeepSeek's web API pauses mid-stream
+            // (e.g. waiting for "Continue generating" button in web UI), we break early
+            // and let the auto-continuation logic send 'continue' to get the rest.
+            const STREAM_IDLE_TIMEOUT = 25000;
             async function readDeepSeekResponse(readable) {
                 let buffer = '';
                 let lastPath = null;
                 let fullContent = '';
                 let newMessageId = null;
                 let finishReason = null;
+                let idleTimer = null;
 
-                for await (const chunk of readable) {
-                    buffer += new TextDecoder().decode(chunk, { stream: true });
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop() || '';
-                    for (const line of lines) {
-                        if (line.startsWith('data: ')) {
-                            try {
-                                const d = JSON.parse(line.slice(6));
-                                if (d.p !== undefined) lastPath = d.p;
-                                if (d.v && typeof d.v === 'object' && d.v.response) {
-                                    if (d.v.response.message_id !== undefined) {
-                                        newMessageId = d.v.response.message_id;
+                const reader = readable.getReader();
+                try {
+                    while (true) {
+                        // Start idle timeout — no new data within 25s means DeepSeek paused
+                        const timeoutPromise = new Promise((_, reject) => {
+                            idleTimer = setTimeout(() => reject(new Error('idle_timeout')), STREAM_IDLE_TIMEOUT);
+                        });
+                        const readPromise = reader.read();
+                        const result = await Promise.race([readPromise, timeoutPromise]);
+                        clearTimeout(idleTimer);
+                        idleTimer = null;
+
+                        const { done, value } = result;
+                        if (done) break;  // Stream ended normally
+
+                        buffer += new TextDecoder().decode(value, { stream: true });
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop() || '';
+                        for (const line of lines) {
+                            if (line.startsWith('data: ')) {
+                                try {
+                                    const d = JSON.parse(line.slice(6));
+                                    if (d.p !== undefined) lastPath = d.p;
+                                    if (d.v && typeof d.v === 'object' && d.v.response) {
+                                        if (d.v.response.message_id !== undefined) {
+                                            newMessageId = d.v.response.message_id;
+                                        }
+                                        if (d.v.response.content !== undefined) {
+                                            fullContent = d.v.response.content;
+                                        }
+                                        if (d.v.response.finish_reason !== undefined) {
+                                            finishReason = d.v.response.finish_reason;
+                                        }
                                     }
-                                    if (d.v.response.content !== undefined) {
-                                        fullContent = d.v.response.content;
+                                    if (lastPath === 'response/content' && d.v !== undefined && typeof d.v !== 'object') {
+                                        fullContent += d.v;
                                     }
-                                    if (d.v.response.finish_reason !== undefined) {
-                                        finishReason = d.v.response.finish_reason;
+                                    if (lastPath === 'response/finish_reason' && d.v !== undefined) {
+                                        finishReason = d.v;
                                     }
-                                }
-                                if (lastPath === 'response/content' && d.v !== undefined && typeof d.v !== 'object') {
-                                    fullContent += d.v;
-                                }
-                                if (lastPath === 'response/finish_reason' && d.v !== undefined) {
-                                    finishReason = d.v;
-                                }
-                            } catch (e) { }
+                                } catch (e) { }
+                            }
                         }
                     }
+                } catch (e) {
+                    if (idleTimer) clearTimeout(idleTimer);
+                    if (e.message === 'idle_timeout') {
+                        console.log(`${agentTag} Stream idle for ${STREAM_IDLE_TIMEOUT/1000}s — DeepSeek paused (Continue button). Collected ${fullContent.length} chars so far.`);
+                        finishReason = 'length';  // Trigger auto-continuation
+                    } else {
+                        console.log(`${agentTag} Stream read error: ${e.message}`);
+                    }
+                } finally {
+                    try { reader.cancel(); } catch (e) {}
+                    if (idleTimer) clearTimeout(idleTimer);
                 }
 
                 if (newMessageId) {
@@ -640,7 +717,7 @@ const server = http.createServer(async (req, res) => {
 
             // Empty response — retry loop with fresh sessions
             let retryAttempt = 0;
-            const MAX_RETRIES = 10;
+            const MAX_RETRIES = 3;
             while (!fullContent || fullContent.trim().length === 0) {
                 retryAttempt++;
                 if (retryAttempt > MAX_RETRIES) {
@@ -665,7 +742,7 @@ const server = http.createServer(async (req, res) => {
                 session.createdAt = null;
                 session.messageCount = 0;
                 // Brief delay before retry to let DeepSeek breathe
-                await new Promise(r => setTimeout(r, Math.min(1000 * retryAttempt, 5000)));
+                await new Promise(r => setTimeout(r, Math.min(500 * retryAttempt, 2000)));
                 const { resp: retryResp } = await askDeepSeekStream(fullPrompt, agentId);
                 const retryResult = await readDeepSeekResponse(retryResp.body);
                 const retryContent = retryResult && retryResult.content ? sanitizeContent(retryResult.content) : '';
@@ -675,11 +752,11 @@ const server = http.createServer(async (req, res) => {
                 }
             }
 
-            // Auto-continuation: if finish_reason is 'length' or content is very long (>25000 chars),
+            // Auto-continuation: if finish_reason is 'length' or content is very long (>10000 chars),
             // send a continuation request to get the rest of the response
             let continuationRounds = 0;
-            const MAX_CONTINUATION = 2;
-            while ((finishReason === 'length' || fullContent.length > 25000) && continuationRounds < MAX_CONTINUATION) {
+            const MAX_CONTINUATION = 4;
+            while ((finishReason === 'length' || fullContent.length > 10000) && continuationRounds < MAX_CONTINUATION) {
                 continuationRounds++;
                 console.log(`${agentTag} Response ${fullContent.length} chars (finish=${finishReason}). Auto-continuing (${continuationRounds}/${MAX_CONTINUATION})...`);
                 await new Promise(r => setTimeout(r, 500));
@@ -697,6 +774,31 @@ const server = http.createServer(async (req, res) => {
             }
 
             let toolCall = parseToolCall(fullContent);
+            
+            // If the LLM talks about generating/creating/downloading files but didn't
+            // use TOOL_CALL:, it's hallucinating or trying to do the work itself.
+            // Force a retry instructing it to use exec_command locally.
+            const doItMyselfPattern = /\b(?:I\s+(?:generated|created|wrote|made|built|ran|executed|downloaded|installed|have|will|can|could|would|shall|'ll)\s)|(?:I'll\s+(?:generate|create|write|make|build|run|execute|download|install|get|find|use|try))|(?:here (?:is|are|'s|goes|you go|your))|(?:download\s+(?:link|URL|here|from))|(?:the\s+(?:PDF|file|document)\s+(?:has been|was|is|was generated|is ready|is available))|(?:generated\s+(?:a|the)\s+(?:PDF|file|document|report))|(?:saved\s+(?:to|at|as)\s+\/(?:[^\s]+\/)+)/i;
+            if (!toolCall && doItMyselfPattern.test(fullContent) && fullContent.length < 5000) {
+                console.log(`${agentTag} LLM tried to do work itself instead of using TOOL_CALL. Retrying with strict tool instruction...`);
+                session.id = null;
+                session.parentMessageId = null;
+                session.createdAt = null;
+                session.messageCount = 0;
+                await new Promise(r => setTimeout(r, 1000));
+                const strictPrompt = fullPrompt + '\n\n[CRITICAL INSTRUCTION] You tried to generate content yourself in your previous response. This does NOT work — you cannot create real files, run code, or download anything. You MUST use TOOL_CALL: exec_command with Python code to generate files on the local server. Do NOT describe what you would do — just output the TOOL_CALL: request. Example:\n\nTOOL_CALL: exec_command\narguments: {"command": "python3 -c \\"print(\'hello\')\\""}\n\nOutput ONLY the TOOL_CALL, nothing else.';
+                const { resp: retryResp2 } = await askDeepSeekStream(strictPrompt, agentId);
+                const retryResult2 = await readDeepSeekResponse(retryResp2.body);
+                const retryContent2 = retryResult2 && retryResult2.content ? sanitizeContent(retryResult2.content) : '';
+                if (retryContent2 && retryContent2.trim()) {
+                    const retryTc = parseToolCall(retryContent2);
+                    if (retryTc) {
+                        console.log(`${agentTag} Forced tool call retry succeeded: ${retryTc.name}`);
+                        fullContent = retryContent2;
+                        toolCall = retryTc;
+                    }
+                }
+            }
             
             // Retry if TOOL_CALL was found but JSON was truncated/invalid
             if (!toolCall && /TOOL_CALL:\s*\w/i.test(fullContent)) {
@@ -722,24 +824,36 @@ const server = http.createServer(async (req, res) => {
                 }
             }
             
-            // Check if any tool results in the current conversation contained a screenshot path.
+            // Check if any tool results in the current conversation contained a file path.
             // If so, and the response doesn't already have MEDIA:, inject it so the gateway
             // delivers the file to Telegram.
-            if (!fullContent.includes('MEDIA:')) {
-                const screenshotPaths = extractScreenshotPaths(messages);
-                if (screenshotPaths.length > 0) {
-                    fullContent += '\n\n' + screenshotPaths.join('\n');
-                    console.log(`${agentTag} Injected MEDIA paths into response: ${screenshotPaths.join(', ')}`);
-                } else {
-                    // Fallback: if DeepSeek mentions a URL and user asked about a page/screenshot,
-                    // take a screenshot automatically using agent-browser
-                    const urlMatch = fullContent.match(/https?:\/\/[^\s<>"']+/i);
-                    if (urlMatch) {
-                        const screenshotResult = takeAutoScreenshot(urlMatch[0]);
-                        if (screenshotResult) {
-                            fullContent += '\n\n' + screenshotResult;
-                            console.log(`${agentTag} Auto-screenshot taken and injected: ${screenshotResult}`);
-                        }
+            // Phase 1: Collect potential file paths from tool results and response text
+            const potentialPaths = extractFilePaths(messages, fullContent);
+            if (potentialPaths.length > 0) {
+                console.log(`${agentTag} Detected ${potentialPaths.length} file path(s): ${potentialPaths.join(', ')}`);
+                // Phase 2: Only inject paths NOT already mentioned in the response
+                const newPaths = [];
+                for (const tag of potentialPaths) {
+                    const filePath = tag.replace(/^MEDIA:/, '');
+                    if (!fullContent.includes(tag) && !fullContent.includes(filePath)) {
+                        newPaths.push(tag);
+                    } else {
+                        console.log(`${agentTag} Skipping MEDIA injection for ${tag} — already referenced in response`);
+                    }
+                }
+                if (newPaths.length > 0) {
+                    fullContent += '\n\n' + newPaths.join('\n');
+                    console.log(`${agentTag} Injected new MEDIA paths: ${newPaths.join(', ')}`);
+                }
+            } else {
+                // Fallback: if DeepSeek mentions a URL and user asked about a page/screenshot,
+                // take a screenshot automatically using agent-browser
+                const urlMatch = fullContent.match(/https?:\/\/[^\s<>"']+/i);
+                if (urlMatch) {
+                    const screenshotResult = takeAutoScreenshot(urlMatch[0]);
+                    if (screenshotResult) {
+                        fullContent += '\n\n' + screenshotResult;
+                        console.log(`${agentTag} Auto-screenshot taken and injected: ${screenshotResult}`);
                     }
                 }
             }

@@ -1,6 +1,6 @@
 # DeepSeek Web API Proxy
 
-An **OpenAI-compatible API server** that wraps DeepSeek's free web chat interface (`chat.deepseek.com`), exposing it as a standard OpenAI `/v1/chat/completions` endpoint. Supports **streaming**, **tool calling**, **multi-session isolation**, and **automatic retry with fresh sessions**.
+An **OpenAI-compatible API server** that wraps DeepSeek's free web chat interface (`chat.deepseek.com`), exposing it as a standard OpenAI `/v1/chat/completions` endpoint. Supports **streaming**, **tool calling**, **multi-session isolation**, **auto-continuation for long responses**, **MEDIA file injection**, and **browser workflow** integration.
 
 > ⚠️ **Not official.** This is a reverse-engineered integration of DeepSeek's web app network protocol. May break if DeepSeek changes their API.
 
@@ -13,8 +13,13 @@ An **OpenAI-compatible API server** that wraps DeepSeek's free web chat interfac
 - ✅ **Tool calling** — inject tool definitions as text instructions, parse `TOOL_CALL:` responses
 - ✅ **Multi-agent sessions** — per-user/agent session isolation with DeepSeek web sessions
 - ✅ **Auto session recovery** — stale sessions reset automatically; retry loop with fresh sessions
-- ✅ **Conversation history** — preserves last 5 exchanges for context recovery
+- ✅ **Auto-continuation** — detects DeepSeek "Continue generating" pauses via 25s idle timeout, sends `continue` to fetch the rest (up to 4 continuation rounds)
+- ✅ **MEDIA file injection** — auto-detects file paths in tool results and appends `MEDIA:/path/to/file` for Telegram attachment delivery
+- ✅ **Browser workflow** — optimized prompts for `browser_navigate` → `browser_snapshot` → `browser_vision` sequence
+- ✅ **Conversation history** — preserves last 15 exchanges for context recovery
 - ✅ **Zero dependencies** — pure Node.js with `http`, `fs`, `os` (no npm packages needed)
+- ✅ **Proof-of-Work solving** — automatically handles DeepSeek's PoW challenges via WebAssembly
+- ✅ **systemd ready** — designed for deployment as a systemd service with auto-restart
 - ✅ **Cross-platform** — Linux, macOS, Windows (Node.js 18+)
 
 ---
@@ -32,20 +37,20 @@ cp auth.example.json auth.json
 
 # 3. Start the proxy
 node server.js
-# Listening on http://0.0.0.0:9654
+# Listening on http://0.0.0.0:9655
 ```
 
 ### Test it
 
 ```bash
 # Health check
-curl http://localhost:9654/
+curl http://localhost:9655/
 
 # List models
-curl http://localhost:9654/v1/models
+curl http://localhost:9655/v1/models
 
 # Chat completion (non-streaming)
-curl -X POST http://localhost:9654/v1/chat/completions \
+curl -X POST http://localhost:9655/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "deepseek-web-v3",
@@ -54,7 +59,7 @@ curl -X POST http://localhost:9654/v1/chat/completions \
   }'
 
 # Chat completion (streaming)
-curl -X POST http://localhost:9654/v1/chat/completions \
+curl -X POST http://localhost:9655/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "deepseek-web-v3",
@@ -63,7 +68,7 @@ curl -X POST http://localhost:9654/v1/chat/completions \
   }'
 
 # List active sessions
-curl http://localhost:9654/v1/sessions
+curl http://localhost:9655/v1/sessions
 ```
 
 ---
@@ -80,7 +85,7 @@ To use this proxy, you need authentication tokens from the DeepSeek website:
 
 | Header / Field | Where to find it |
 |---|---|
-| `Authorization` (token) | Request headers → `Authorization: Bearer <token>` |
+| `Authorization` (token) | Request headers → `Authorization: Bearer ***` |
 | `x-hif-dliq` | Request headers |
 | `x-hif-leim` | Request headers |
 | `Cookie` | Request headers (needs `ds_session_id` and `smidV2`) |
@@ -94,7 +99,7 @@ To use this proxy, you need authentication tokens from the DeepSeek website:
   "hif_dliq": "YOUR_HIF_DLIQ",
   "hif_leim": "YOUR_HIF_LEIM",
   "cookie": "ds_session_id=YOUR_SESSION; smidV2=YOUR_SMIDV2",
-  "wasmUrl": "https://fe-static.deepseek.com/chat/static/sha3_wasm_bg.xxx.wasm"
+  "wasmUrl": "https://fe-static.deepseek.com/static/sha3_wasm_bg.xxx.wasm"
 }
 ```
 
@@ -138,17 +143,34 @@ OpenAI-compatible chat completion. Supports both `stream: true` (SSE) and `strea
 }
 ```
 
-**`user` field** — used for session isolation. Different values get separate DeepSeek sessions. When omitted, defaults to the requesting IP address. On localhost, defaults to `default`.
+**`user` field** — used for session isolation. Different values get separate DeepSeek sessions. When omitted, defaults to the requesting IP address. On localhost, defaults to `dev-agent`.
 
 **Tool calling** — pass a `tools` array (OpenAI format). The proxy injects tool definitions into the system prompt and parses `TOOL_CALL:` responses from the model.
+
+**MEDIA file injection** — when tool results contain file paths (screenshots, generated PDFs, etc.), the proxy auto-appends `MEDIA:/path/to/file` tags for Telegram attachment delivery.
 
 ### `GET /v1/sessions`
 
 List all active sessions with their message counts and ages.
 
+```json
+{
+  "agents": [
+    {
+      "agent": "dev-agent",
+      "session_id": "abc123",
+      "message_count": 5,
+      "history_size": 3,
+      "age_min": 12
+    }
+  ],
+  "total": 1
+}
+```
+
 ### `POST /reset-session?agent=<id>`
 
-Reset a specific agent's session. Use `?agent=all` to reset all sessions.
+Reset a specific agent's DeepSeek web session. Use `?agent=all` to reset all sessions. History is preserved and re-injected on the next request.
 
 ---
 
@@ -158,9 +180,36 @@ Reset a specific agent's session. Use `?agent=all` to reset all sessions.
 
 | Variable | Default | Description |
 |---|---|---|
-| `PORT` | `9654` | Server listen port |
+| `PORT` | `9655` | Server listen port |
 | `HOST` | `0.0.0.0` | Bind address |
-| `AUTH_CONFIG_PATH` | `./auth.json` | Path to auth config file |
+| `AUTH_CONFIG_PATH` | `./auth.json` | Path to auth config file (currently hardcoded to `deepseek-auth.json`) |
+
+### Systemd Service (Production)
+
+For production deployments, run as a systemd service with auto-restart:
+
+```ini
+# /etc/systemd/system/deepseek-web-proxy.service
+[Unit]
+Description=DeepSeek Web API Proxy
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/deepseek-web-api-proxy
+ExecStart=/usr/bin/node /root/deepseek-web-api-proxy/server.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+systemctl enable deepseek-web-proxy.service
+systemctl start deepseek-web-proxy.service
+```
 
 ### Command-Line Client
 
@@ -178,7 +227,7 @@ node client.js "What is the capital of France?"
 ┌──────────────┐     POST /v1/chat/completions     ┌──────────────────┐
 │              │ ──────────────────────────────►    │                  │
 │   OpenAI     │    {messages, tools, stream}        │  DeepSeek Proxy  │
-│   Client     │ ◄──────────────────────────────    │  (port 9654)     │
+│   Client     │ ◄──────────────────────────────    │  (port 9655)     │
 │              │    {choices[].message.content}      │  Node.js HTTP    │
 └──────────────┘     or tool_calls response          │  Server          │
                                                      └────────┬─────────┘
@@ -198,7 +247,7 @@ node client.js "What is the capital of France?"
                                                │  DeepSeek Web    │
                                                │  chat.deepseek   │
                                                │  .com            │
-                                               │  (Free V3 model) │
+                                               │  (Free model)    │
                                                └──────────────────┘
 ```
 
@@ -210,9 +259,11 @@ node client.js "What is the capital of France?"
 4. **Proxy** solves PoW using WebAssembly
 5. **Proxy** creates or reuses a DeepSeek chat session
 6. **Proxy** sends completion request with PoW proof
-7. **Proxy** parses SSE stream from DeepSeek
-8. **Proxy** converts to OpenAI format response
-9. **Client** receives standard OpenAI response
+7. **Proxy** parses SSE stream from DeepSeek (with 25s idle timeout for "Continue" pauses)
+8. **Proxy** auto-continues long responses (up to 4 rounds)
+9. **Proxy** checks tool results for file paths, injects MEDIA: tags
+10. **Proxy** converts to OpenAI format response
+11. **Client** receives standard OpenAI response
 
 ---
 
@@ -224,10 +275,13 @@ The proxy maintains per-agent session state:
 |---|---|
 | Max messages before auto-reset | 100 |
 | Session TTL | 2 hours |
-| History buffer (exchanges) | 5 |
-| Empty response retries | 10 (with exponential backoff) |
+| History buffer (exchanges) | 15 |
+| Max history chars | 10,000 |
+| Empty response retries | 3 (with backoff) |
+| Auto-continuation rounds | 4 |
+| Stream idle timeout | 25 seconds |
 
-When a session is reset (stale or full), the last 5 exchanges are preserved and re-injected as context for the new session.
+When a session is reset (stale or full), the last 15 exchanges are preserved and re-injected as context for the new session.
 
 ---
 
@@ -241,6 +295,21 @@ The proxy supports OpenAI-style tool/function calling:
 4. Proxy parses the response and returns it as OpenAI `tool_calls` format
 5. Client executes the tool and sends the result back in a follow-up message
 
+### Browser Workflow
+
+For web page interaction, the proxy recommends this sequence:
+1. `browser_navigate(url: "https://...")` — go to a page
+2. `browser_snapshot()` — wait for page load and get text content
+3. `browser_vision(question: "describe what you see")` — take a screenshot and analyze
+
+Screenshot paths are auto-detected and delivered via MEDIA: tags.
+
+### File Detection
+
+The proxy scans the last 3 tool results for file paths (`screenshot_path`, `path`, `file_path`, `output_path`, `result_path`). Real files are injected as `MEDIA:/path/to/file` into the response for automatic attachment delivery.
+
+Supported extensions: `png|jpg|jpeg|webp|gif|pdf|docx|doc|txt|md|html|htm|xlsx|xls|csv|pptx|zip|tar|gz|mp4|mov|mp3|wav|ogg`
+
 ---
 
 ## Use with Hermes Agents
@@ -252,9 +321,11 @@ To use this proxy with [Hermes Agent](https://hermes-agent.nousresearch.com/):
 model:
   default: deepseek-web-v3
   provider: custom
-  base_url: http://localhost:9654/v1
+  base_url: http://localhost:9655/v1
   model: deepseek-web-v3
 ```
+
+For Telegram integration, enable the `browser` toolset in your agent's config for web page interaction and screenshot capabilities.
 
 ---
 
