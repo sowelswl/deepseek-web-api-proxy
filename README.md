@@ -32,8 +32,8 @@ git clone https://github.com/tajerek/deepseek-web-api-proxy.git
 cd deepseek-web-api-proxy
 
 # 2. Configure your DeepSeek session
-cp auth.example.json auth.json
-# Edit auth.json with your credentials (see "Getting Credentials" below)
+# Export credentials from your browser (see "Getting Credentials" below)
+# then save the file as deepseek-auth.json in this directory
 
 # 3. Start the proxy
 node server.js
@@ -75,10 +75,47 @@ curl http://localhost:9655/v1/sessions
 
 ## Getting Credentials
 
-To use this proxy, you need authentication tokens from the DeepSeek website:
+To use this proxy, you need authentication credentials from the DeepSeek website (`chat.deepseek.com`). There are two ways to obtain them — the **Chrome Extension** (recommended, easier) or **manually** via DevTools.
+
+---
+
+### 🧩 Method 1: Chrome Extension (Recommended)
+
+The repo includes a Chrome extension (`chrome-extension/`) that automatically extracts all required credentials from your active `chat.deepseek.com` session with one click.
+
+#### Install the Extension
+
+1. Open Chrome and go to `chrome://extensions`
+2. Enable **"Developer mode"** (toggle in the top-right corner)
+3. Click **"Load unpacked"**
+4. Select the `chrome-extension/` folder inside this repo
+
+#### Use It
+
+1. **Log in** to [chat.deepseek.com](https://chat.deepseek.com) and send at least one message (so a session is created)
+2. Click the extension icon 🧩 in the Chrome toolbar → **"DeepSeek Auth Exporter"** popup opens
+3. Click **"🔄 Collect from Tab"** — the extension reads cookies + localStorage from the DeepSeek tab automatically
+4. Once status shows ✅ **"All credentials captured"**, click **"💾 Download File"**
+
+The extension saves the file as **`deepseek-auth.json`** — place it in the repo root:
+
+```bash
+# Move the downloaded file to the proxy directory
+mv ~/Downloads/deepseek-auth.json /path/to/deepseek-web-api-proxy/
+```
+
+That's it. The proxy reads `deepseek-auth.json` by default.
+
+> **Tip:** Credentials expire every 1–2 hours. When the proxy returns empty responses, go back to chat.deepseek.com in your browser, open the extension popup again, click **Collect from Tab**, then **Download File** and replace the old file. A systemd service restart may be needed to pick up the new file.
+
+---
+
+### 🛠 Method 2: Manual (DevTools)
+
+If you prefer not to use the extension, you can copy the credentials by hand:
 
 1. **Open** [chat.deepseek.com](https://chat.deepseek.com) in your browser
-2. **Open DevTools** (F12) → Network tab
+2. **Open DevTools** (F12) → **Network** tab
 3. **Send any message** in the chat
 4. **Find a request** to `chat.deepseek.com/api/v0/chat/completion`
 5. **Copy these headers:**
@@ -91,7 +128,14 @@ To use this proxy, you need authentication tokens from the DeepSeek website:
 | `Cookie` | Request headers (needs `ds_session_id` and `smidV2`) |
 | `wasmUrl` | Find `sha3_wasm_bg.*.wasm` in the page sources |
 
-6. **Paste** into `auth.json`:
+6. **Save** as `deepseek-auth.json` (use `auth.example.json` as a template):
+
+```bash
+cp auth.example.json deepseek-auth.json
+# Edit the file with the values you copied
+```
+
+The file should look like this:
 
 ```json
 {
@@ -103,7 +147,7 @@ To use this proxy, you need authentication tokens from the DeepSeek website:
 }
 ```
 
-> **Note:** These credentials expire periodically (typically 1–2 hours). When the proxy returns empty responses, reconnect to DeepSeek in your browser and refresh the values.
+> **Note:** Manually copied credentials expire periodically (typically 1–2 hours). When the proxy returns empty responses, reconnect to DeepSeek in your browser and refresh the values.
 
 ---
 
@@ -178,11 +222,7 @@ Reset a specific agent's DeepSeek web session. Use `?agent=all` to reset all ses
 
 ### Environment Variables
 
-| Variable | Default | Description |
-|---|---|---|
-| `PORT` | `9655` | Server listen port |
-| `HOST` | `0.0.0.0` | Bind address |
-| `AUTH_CONFIG_PATH` | `./auth.json` | Path to auth config file (currently hardcoded to `deepseek-auth.json`) |
+The proxy reads its auth config from `deepseek-auth.json` in the repo root directory. There is no environment variable configuration for the file path.
 
 ### Systemd Service (Production)
 
