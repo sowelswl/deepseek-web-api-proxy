@@ -667,11 +667,12 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
             
-            // Use `user` field for session isolation (allows multiple agents/subagents)
-            // Each unique user gets its own DeepSeek session. Falls back to remote IP
-            // for external clients that don't set user, or 'dev-agent' for local clients.
+            // Use X-Agent-ID header OR `user` field for session isolation
+            // Priority: X-Agent-ID header > params.user > IP-based fallback
+            // X-Agent-ID allows any HTTP client (including subagents) to identify
+            // themselves without modifying the request body.
             const remoteAddr = req.socket.remoteAddress || 'unknown';
-            const agentId = params.user || (
+            const agentId = req.headers['x-agent-id'] || params.user || (
                 (remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1')
                     ? 'dev-agent'
                     : remoteAddr
