@@ -667,11 +667,15 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
             
-            // Use remote IP for session isolation (local gets 'dev-agent', external per-IP)
+            // Use `user` field for session isolation (allows multiple agents/subagents)
+            // Each unique user gets its own DeepSeek session. Falls back to remote IP
+            // for external clients that don't set user, or 'dev-agent' for local clients.
             const remoteAddr = req.socket.remoteAddress || 'unknown';
-            const agentId = (remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1')
-                ? 'dev-agent'
-                : (params.user || remoteAddr);
+            const agentId = params.user || (
+                (remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1')
+                    ? 'dev-agent'
+                    : remoteAddr
+            );
             const agentTag = `[${agentId}]`;
             const { prompt, systemPrompt } = formatMessages(messages, tools);
 
