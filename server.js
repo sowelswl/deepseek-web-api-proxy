@@ -37,27 +37,49 @@ const SESSION_TTL_MS = 2 * 60 * 60 * 1000;  // 2 hours
 // === DeepSeek Web API Config — loaded from external config file ===
 const DS_CONFIG_PATH = __dirname + '/deepseek-auth.json';
 let DS_CONFIG = {};
+let DS_CONFIG_ERROR = null;
 function loadDeepSeekConfig() {
     try {
+        if (!fs.existsSync(DS_CONFIG_PATH)) {
+            DS_CONFIG_ERROR = `Auth config not found at ${DS_CONFIG_PATH}. Please get fresh tokens from chat.deepseek.com and save them to this file.`;
+            DS_CONFIG = {};
+            console.error(`[DS-API] WARNING: ${DS_CONFIG_ERROR}`);
+            return;
+        }
         const raw = fs.readFileSync(DS_CONFIG_PATH, 'utf8');
         DS_CONFIG = JSON.parse(raw);
-        console.log(`[DS-API] Loaded auth config from ${DS_CONFIG_PATH}`);
+        DS_CONFIG_ERROR = null;
+        if (!DS_CONFIG.token || DS_CONFIG.token.startsWith('YOUR_')) {
+            DS_CONFIG_ERROR = `Auth config at ${DS_CONFIG_PATH} contains placeholder tokens. Update them with real values from chat.deepseek.com.`;
+            console.error(`[DS-API] WARNING: ${DS_CONFIG_ERROR}`);
+        }
+        console.log(`[DS-API] Loaded auth config from ${DS_CONFIG_PATH} (model_type: ${DS_CONFIG.model_type || 'default'})`);
     } catch (e) {
-        console.error(`[DS-API] FATAL: Could not load auth config: ${e.message}`);
-        process.exit(1);
+        DS_CONFIG_ERROR = `Could not load auth config from ${DS_CONFIG_PATH}: ${e.message}. Please generate fresh auth.json from the Chrome extension.`;
+        DS_CONFIG = {};
+        console.error(`[DS-API] WARNING: ${DS_CONFIG_ERROR}`);
     }
 }
 loadDeepSeekConfig();
 
-const BASE_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0",
-    "X-Client-Platform": "web", "X-Client-Version": "1.0.0-always",
-    "X-Client-Locale": "en_US", "X-App-Version": "20241129.1",
-    "Authorization": `Bearer ${DS_CONFIG.token}`,
-    "x-hif-dliq": DS_CONFIG.hif_dliq || '', "x-hif-leim": DS_CONFIG.hif_leim || '',
-    "Origin": "https://chat.deepseek.com", "Referer": "https://chat.deepseek.com/",
-    "Cookie": DS_CONFIG.cookie, "Content-Type": "application/json",
-};
+function getBaseHeaders() {
+    return {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0",
+        "X-Client-Platform": "web", "X-Client-Version": "1.0.0-always",
+        "X-Client-Locale": "en_US", "X-App-Version": "20241129.1",
+        "Authorization": `Bearer ${DS_CONFIG.token || ''}`,
+        "x-hif-dliq": DS_CONFIG.hif_dliq || '', "x-hif-leim": DS_CONFIG.hif_leim || '',
+        "Origin": "https://chat.deepseek.com", "Referer": "https://chat.deepseek.com/",
+        "Cookie": DS_CONFIG.cookie || '', "Content-Type": "application/json",
+    };
+}
+
+// Model type for DeepSeek API — reads from config file, falls back to 'default' (chat mode).
+// The actual model version (V3/V4/V4 Pro/R1) is determined by the user's DeepSeek account/session.
+// Valid API values: default, DEFAULT, expert, vision
+function getModelType() {
+    return DS_CONFIG.model_type || 'default';
+}
 
 function createSession() {
     return {
@@ -123,7 +145,7 @@ async function askDeepSeekStream(prompt, agentId) {
     }
 
     const cr = await fetch('https://chat.deepseek.com/api/v0/chat/create_pow_challenge', {
-        method: 'POST', headers: BASE_HEADERS,
+        method: 'POST', headers: getBaseHeaders(),
         body: JSON.stringify({ target_path: '/api/v0/chat/completion', scene: 'completion_like' })
     });
     const chalJson = JSON.parse(await cr.text());
@@ -132,7 +154,7 @@ async function askDeepSeekStream(prompt, agentId) {
 
     if (!session.id) {
         const sr = await fetch('https://chat.deepseek.com/api/v0/chat_session/create', {
-            method: 'POST', headers: BASE_HEADERS, body: '{}'
+            method: 'POST', headers: getBaseHeaders(), body: '{}'
         });
         const sessionData = await sr.json();
         session.id = sessionData.data.biz_data.id;
@@ -151,11 +173,11 @@ async function askDeepSeekStream(prompt, agentId) {
     })).toString('base64');
     const resp = await fetch('https://chat.deepseek.com/api/v0/chat/completion', {
         method: 'POST',
-        headers: { ...BASE_HEADERS, 'X-DS-PoW-Response': powB64 },
+        headers: { ...getBaseHeaders(), 'X-DS-PoW-Response': powB64 },
         body: JSON.stringify({
             chat_session_id: session.id,
             parent_message_id: session.parentMessageId,
-            model_type: 'default',
+            model_type: getModelType(),
             prompt: prompt, ref_file_ids: [],
             thinking_enabled: false, search_enabled: false, user_options: {},
         })
@@ -165,6 +187,14 @@ async function askDeepSeekStream(prompt, agentId) {
     if (resp.status !== 200) {
         const errText = await resp.text();
         console.log(`${agentTag} Session error (${resp.status}): ${errText.substring(0, 100)}`);
+        
+        // Auth failure — token expired or invalid
+        if (resp.status === 401) {
+            const errMsg = `DeepSeek auth token expired or invalid. Please update deepseek-auth.json with fresh tokens from chat.deepseek.com. Response: ${errText.substring(0, 200)}`;
+            console.error(`${agentTag} AUTH ERROR: ${errMsg}`);
+            throw new Error(errMsg);
+        }
+        
         if (resp.status === 400 || resp.status === 404 || resp.status === 500) {
             console.log(`${agentTag} Session ${session.id} expired. Creating new session...`);
             session.id = null;
@@ -173,7 +203,7 @@ async function askDeepSeekStream(prompt, agentId) {
             session.messageCount = 0;
 
             const sr2 = await fetch('https://chat.deepseek.com/api/v0/chat_session/create', {
-                method: 'POST', headers: BASE_HEADERS, body: '{}'
+                method: 'POST', headers: getBaseHeaders(), body: '{}'
             });
             const sessionData2 = await sr2.json();
             session.id = sessionData2.data.biz_data.id;
@@ -188,17 +218,20 @@ async function askDeepSeekStream(prompt, agentId) {
             })).toString('base64');
             const resp2 = await fetch('https://chat.deepseek.com/api/v0/chat/completion', {
                 method: 'POST',
-                headers: { ...BASE_HEADERS, 'X-DS-PoW-Response': newPowB64 },
+                headers: { ...getBaseHeaders(), 'X-DS-PoW-Response': newPowB64 },
                 body: JSON.stringify({
                     chat_session_id: session.id,
                     parent_message_id: null,
-                    model_type: 'default',
+                    model_type: getModelType(),
                     prompt: prompt, ref_file_ids: [],
                     thinking_enabled: false, search_enabled: false, user_options: {},
                 })
             });
             return { resp: resp2, agentId };
         }
+        
+        // Any other non-200 status (422, 403, etc.) — body already consumed by .text(), throw
+        throw new Error(`DeepSeek API returned ${resp.status}: ${errText.substring(0, 200)}`);
     }
 
     return { resp, agentId };
@@ -321,7 +354,7 @@ function buildToolCallResponse(toolCall) {
         id: 'ds-' + Date.now(),
         object: 'chat.completion',
         created: Math.floor(Date.now() / 1000),
-        model: 'deepseek-web-v3',
+        model: 'deepseek-web-v4-pro',
         choices: [{
             index: 0,
             message: {
@@ -344,7 +377,7 @@ function buildTextResponse(content, prompt) {
         id: 'ds-' + Date.now(),
         object: 'chat.completion',
         created: Math.floor(Date.now() / 1000),
-        model: 'deepseek-web-v3',
+        model: 'deepseek-web-v4-pro',
         choices: [{
             index: 0,
             message: { role: 'assistant', content },
@@ -536,14 +569,14 @@ const server = http.createServer(async (req, res) => {
     // Health check
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/health')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'ok', model: 'deepseek-web-v3', agents: sessions.size }));
+        res.end(JSON.stringify({ status: 'ok', model: 'deepseek-web-v4-pro', agents: sessions.size }));
         return;
     }
 
     // Models
     if (req.method === 'GET' && url.pathname === '/v1/models') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ data: [{ id: 'deepseek-web-v3', object: 'model', created: Date.now(), owned_by: 'deepseek-web' }] }));
+        res.end(JSON.stringify({ data: [{ id: 'deepseek-web-v4-pro', object: 'model', created: Date.now(), owned_by: 'deepseek-web' }] }));
         return;
     }
 
@@ -603,6 +636,37 @@ const server = http.createServer(async (req, res) => {
             const messages = params.messages || [];
             const tools = params.tools || [];
             const stream = params.stream === true;
+            
+            // Check auth config validity before proceeding
+            if (DS_CONFIG_ERROR) {
+                const authError = {
+                    error: {
+                        message: `⚡ DeepSeek auth issue: ${DS_CONFIG_ERROR}\n\nGet fresh tokens from chat.deepseek.com via Chrome extension, then save to deepseek-auth.json and restart the proxy.`,
+                        type: 'auth_error',
+                        hint: 'Run the Chrome extension on chat.deepseek.com, click "Collect from Tab", then "Download File" and replace deepseek-auth.json.',
+                    }
+                };
+                if (stream) {
+                    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'Access-Control-Allow-Origin': '*' });
+                    const created = Math.floor(Date.now() / 1000);
+                    res.write(`data: ${JSON.stringify({
+                        id: 'ds-auth-error', object: 'chat.completion.chunk',
+                        created, model: 'deepseek-web-v4-pro',
+                        choices: [{ index: 0, delta: { content: authError.error.message }, finish_reason: null }]
+                    })}\\n\\n`);
+                    res.write(`data: ${JSON.stringify({
+                        id: 'ds-auth-error', object: 'chat.completion.chunk',
+                        created, model: 'deepseek-web-v4-pro',
+                        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
+                    })}\\n\\ndata: [DONE]\\n\\n`);
+                    res.end();
+                } else {
+                    res.writeHead(503, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify(authError));
+                }
+                return;
+            }
+            
             // Use remote IP for session isolation (local gets 'dev-agent', external per-IP)
             const remoteAddr = req.socket.remoteAddress || 'unknown';
             const agentId = (remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1')
@@ -886,7 +950,7 @@ const server = http.createServer(async (req, res) => {
                         id: tcResp.id,
                         object: 'chat.completion.chunk',
                         created: tcResp.created,
-                        model: 'deepseek-web-v3',
+                        model: 'deepseek-web-v4-pro',
                         choices: [{
                             index: 0,
                             delta: { role: 'assistant', content: null, tool_calls: tcResp.choices[0].message.tool_calls },
@@ -898,7 +962,7 @@ const server = http.createServer(async (req, res) => {
                         id: tcResp.id,
                         object: 'chat.completion.chunk',
                         created: tcResp.created,
-                        model: 'deepseek-web-v3',
+                        model: 'deepseek-web-v4-pro',
                         choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }]
                     };
                     res.write(`data: ${JSON.stringify(stopDelta)}\n\ndata: [DONE]\n\n`);
@@ -909,13 +973,13 @@ const server = http.createServer(async (req, res) => {
                         const chunk = fullContent.substring(i, i + 50);
                         res.write(`data: ${JSON.stringify({
                             id, object: 'chat.completion.chunk',
-                            created, model: 'deepseek-web-v3',
+                            created, model: 'deepseek-web-v4-pro',
                             choices: [{ index: 0, delta: { content: chunk }, finish_reason: null }]
                         })}\n\n`);
                     }
                     res.write(`data: ${JSON.stringify({
                         id, object: 'chat.completion.chunk',
-                        created, model: 'deepseek-web-v3',
+                        created, model: 'deepseek-web-v4-pro',
                         choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
                     })}\n\ndata: [DONE]\n\n`);
                 }
@@ -931,9 +995,11 @@ const server = http.createServer(async (req, res) => {
                 console.log(`${agentTag} Response (tool=${!!toolCall}, ${elapsed}ms, ${fullContent.length} chars)`);
             }
         } catch (e) {
-            console.log('[DS-API] Error:', e.message);
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: { message: e.message, type: 'server_error' } }));
+            const isAuthError = e.message && e.message.includes('DeepSeek auth token expired');
+            console.log(`[DS-API] ${isAuthError ? 'AUTH ERROR' : 'Error'}: ${e.message}`);
+            const statusCode = isAuthError ? 401 : 500;
+            res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: { message: e.message, type: isAuthError ? 'auth_error' : 'server_error' } }));
         }
     });
 });

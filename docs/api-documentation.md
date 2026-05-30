@@ -6,7 +6,7 @@ This project reverse-engineers the **DeepSeek Web chat API** (`chat.deepseek.com
 
 **Server:** `host2.onldigital.com` (161.97.175.214)  
 **Proxy:** Node.js HTTP server on port 9655  
-**Model exposed:** `deepseek-web-v3` (DeepSeek V3 via web)
+**Model exposed:** `deepseek-web-v4-pro` (DeepSeek V4 Pro via web)
 
 ---
 
@@ -172,7 +172,7 @@ GET /
 Response:
 {
   "status": "ok",
-  "model": "deepseek-web-v3",
+  "model": "deepseek-web-v4-pro",
   "agents": <int>        ← number of active agent sessions
 }
 ```
@@ -186,7 +186,7 @@ Response:
 {
   "data": [
     {
-      "id": "deepseek-web-v3",
+      "id": "deepseek-web-v4-pro",
       "object": "model",
       "created": <timestamp>,
       "owned_by": "deepseek-web"
@@ -230,7 +230,7 @@ Response (non-stream, stream=false):
   "id": "ds-<timestamp>",
   "object": "chat.completion",
   "created": <unix_ts>,
-  "model": "deepseek-web-v3",
+  "model": "deepseek-web-v4-pro",
   "choices": [
     {
       "index": 0,
@@ -320,7 +320,7 @@ Remote Hermes agents should set the `user` field in their requests for named ses
 # In remote agent config
 model:
   base_url: http://161.97.175.214:9654/v1
-  model: deepseek-web-v3
+  model: deepseek-web-v4-pro
 ```
 
 The proxy uses `user` from the request body. If not set, it falls back to the client's IP as the session key.
@@ -498,6 +498,7 @@ const DS_CONFIG = {
   hif_leim: "...",                  // Custom header
   cookie: "ds_session_id=...; smidV2=...",  // Browser cookies
   wasmUrl: "https://fe-static.deepseek.com/chat/static/sha3_wasm_bg.<hash>.wasm",
+  model_type: "default",          ← optional, defaults to "default" (chat mode)
 };
 ```
 
@@ -505,10 +506,10 @@ const DS_CONFIG = {
 
 ```yaml
 model:
-  default: deepseek-web-v3
+  default: deepseek-web-v4-pro
   provider: custom
   base_url: http://127.0.0.1:9655/v1
-  model: deepseek-web-v3
+  model: deepseek-web-v4-pro
 providers: {}
 fallback_providers: []
 ```
@@ -552,11 +553,13 @@ curl -s http://127.0.0.1:9655/v1/chat/completions \
 ## 11. Error Codes
 
 | HTTP Code | Type | Meaning |
-|---|---|---|
+|---|---|---|---|
 | 200 | OK | Response successful |
+| 401 | auth_error | DeepSeek token expired/invalid — update deepseek-auth.json |
 | 404 | Not found | Invalid endpoint |
 | 500 | server_error | Internal proxy error (exception) |
 | 502 | empty_response | DeepSeek returned empty content |
+| 503 | auth_error | Auth config missing or contains placeholder tokens |
 
 Error response format:
 ```json
@@ -593,7 +596,7 @@ Error response format:
 | Feature | Web API (Proxy) | Official API |
 |---|---|---|
 | **Cost** | Free | Paid (per-token) |
-| **Model** | DeepSeek V3 | DeepSeek V4 Flash / V3 |
+| **Model** | DeepSeek V4 Pro | DeepSeek V4 Flash / V3 |
 | **Tool calling** | Hacky (text injection) | Native (structured) |
 | **Streaming** | Yes | Yes |
 | **Reliability** | Medium (session drops) | High (SLA) |
