@@ -243,8 +243,10 @@ function formatToolDefinitions(tools) {
     if (!tools || tools.length === 0) return '';
     let text = '\n\n--- TOOL REQUEST SYSTEM ---\n';
     text += 'You are an AI that ONLY REASONS and REQUESTS tool executions. You do NOT run any commands yourself.\n';
-    text += 'When you need data from the local server, REQUEST a tool by responding EXACTLY with:\n';
+    text += 'When you need data from the local server, REQUEST a tool by responding EXACTLY with either format:\n';
     text += 'TOOL_CALL: <function_name>\narguments: <JSON arguments>\n\n';
+    text += 'or\n';
+    text += 'Tool Call: <function_name>\nArguments: <JSON arguments>\n\n';
     text += 'Your response will be sent to the Hermes gateway, which executes the command on the LOCAL machine and sends the output back to you in the next message.\n\n';
     text += 'RULES:\n';
     text += '1. You ONLY output the tool request — you never run anything\n';
@@ -292,8 +294,9 @@ function formatToolDefinitions(tools) {
 }
 
 function parseToolCall(text) {
-    // Find TOOL_CALL: anywhere in the text, followed by a function name
-    const match = text.match(/TOOL_CALL:\s*(\w[\w-]*)\s*/i);
+    // Find TOOL_CALL: or Tool Call: anywhere in the text, followed by a function name
+    // (DeepSeek sometimes outputs "Tool Call:" with a space instead of "TOOL_CALL:")
+    const match = text.match(/(?:TOOL_CALL|Tool\s*Call):\s*(\w[\w-]*)\s*/i);
     if (!match) {
         console.log(`[parseToolCall] No TOOL_CALL match in ${text.length} chars`);
         return null;
